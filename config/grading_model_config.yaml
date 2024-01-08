@@ -1,0 +1,5 @@
+grading_model:
+  num_feats: 6
+  base_model: "bert-base-uncased"
+  is_gpu: true
+  
