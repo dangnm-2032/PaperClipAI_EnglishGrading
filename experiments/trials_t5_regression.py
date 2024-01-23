@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 from torch._tensor import Tensor
 from torch.nn.modules import Module
+from torch.utils.data import Dataset
 from transformers import T5EncoderModel, PreTrainedModel
 from torch import nn
 from transformers import Trainer, AutoTokenizer, AutoConfig, TrainingArguments, DataCollatorWithPadding
@@ -36,7 +37,9 @@ class CustomT5Model(PreTrainedModel):
             # nn.Sigmoid(),
         )
     def forward(self, **inputs):
-        t5_outputs = self.t5(**inputs)
+        t5_outputs = self.t5(
+            input_ids=inputs['input_ids'],
+            attention_mask=inputs['attention_mask'])
         logits = self.regression_layer(t5_outputs.last_hidden_state)
         return logits
 
@@ -56,9 +59,20 @@ class CustomTrainer(Trainer):
         loss_fct = nn.MSELoss()
         loss = loss_fct(logits, labels)
         return (loss, logits) if return_outputs else loss
-    def prediction_step(self, model: Module, inputs: Dict[str, Tensor | Any], prediction_loss_only: bool, ignore_keys: List[str] | None = None) -> Tuple[Tensor | None, Tensor | None, Tensor | None]:
-         return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
     
+def compute_metrics(pred):
+    mse_fn = nn.MSELoss()
+    mae_fn = nn.L1Loss()
+
+    labels = pred.label_ids
+    predictions = pred.predictions
+    results = {
+        "mse": mse_fn(predictions, labels),
+        "mae": mae_fn(predictions, labels)
+    }
+    print(results)
+    return results
+
 def clean_text(batch):
     text = batch['full_text']
     text = text.replace("\n", ' ')
@@ -87,16 +101,16 @@ def transform(batch):
         'labels': torch.Tensor(targets)
     }
 
-wandb.login()
-run = wandb.init(
-    # Set the project where this run will be logged
-    project="PaperClipAI_EnglishGrading",
-    # Track hyperparameters and run metadata
-    # config={
-    #     "learning_rate": lr,
-    #     "epochs": epochs,
-    # },
-)
+# wandb.login()
+# run = wandb.init(
+#     # Set the project where this run will be logged
+#     project="PaperClipAI_EnglishGrading",
+#     # Track hyperparameters and run metadata
+#     # config={
+#     #     "learning_rate": lr,
+#     #     "epochs": epochs,
+#     # },
+# )
 base_model = "google/flan-t5-large"
 config = AutoConfig.from_pretrained(base_model)
 tokenizer = AutoTokenizer.from_pretrained(base_model)
@@ -126,35 +140,39 @@ val_ds = ds['test']
 print("INIT TRAINING ARGS")
 default_args = {
     "output_dir": "tmp",
-    "evaluation_strategy": "no",
+    "evaluation_strategy": "steps",
     "num_train_epochs": 5,
-    "log_level": "error",
     "logging_steps": 1,
+    "eval_steps": 1,
     "report_to": "wandb",
-    "full_determinism": False,
     'save_strategy': 'epoch',
-
 }
 training_args = TrainingArguments(
     per_device_train_batch_size=1,
-    per_device_eval_batch_size=4,
+    per_device_eval_batch_size=8,
     remove_unused_columns=False,
-    gradient_accumulation_steps=32,
-    learning_rate=1e-4,
+    gradient_accumulation_steps=1,
+    learning_rate=0.00008818,
     weight_decay=0.01,
     lr_scheduler_type='cosine',
     warmup_ratio=0.1,
+    do_eval=True,
     **default_args)
 print("INIT DATA COLLATOR")
 data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 print("INIT TRAINER")
-trainer = CustomTrainer(model=model, 
-                        args=training_args,
-                        train_dataset=train_ds,
-                        # eval_dataset=val_ds,
-                        data_collator=data_collator)
-trainer.train()
-save_name = "artifacts/trained_model/EnglishGrading_t5_regression_5e"
-trainer.save_model(save_name)
-config.save_pretrained(save_name)
-tokenizer.save_pretrained(save_name)
+trainer = CustomTrainer(
+    model=model, 
+    args=training_args,
+    train_dataset=train_ds,
+    eval_dataset=val_ds,
+    data_collator=data_collator,
+    compute_metrics=compute_metrics,
+)
+# trainer.train()
+# save_name = "artifacts/trained_model/EnglishGrading_t5_regression_5e"
+# trainer.save_model(save_name)
+# config.save_pretrained(save_name)
+# tokenizer.save_pretrained(save_name)
+# trainer.evaluate()
+trainer.predict(val_ds)

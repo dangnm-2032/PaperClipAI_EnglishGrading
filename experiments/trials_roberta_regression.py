@@ -31,7 +31,7 @@ class CustomROBERTAModel(PreTrainedModel):
                 nn.Linear(32, 16),
                 nn.GELU(),
                 nn.Linear(16, num_feats),
-                nn.Sigmoid(),
+                # nn.Sigmoid(),
         )
 
     def forward(self, **inputs):
@@ -126,7 +126,7 @@ print("INIT TRAINING ARGS")
 default_args = {
     "output_dir": "tmp",
     "evaluation_strategy": "no",
-    "num_train_epochs": 1,
+    "num_train_epochs": 5,
     "log_level": "error",
     "logging_steps": 1,
     "report_to": "wandb",

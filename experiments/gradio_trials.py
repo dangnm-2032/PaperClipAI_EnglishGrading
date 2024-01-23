@@ -1,61 +1,83 @@
-from transformers import BertModel, PreTrainedModel, AutoConfig, AutoTokenizer
+from transformers import T5EncoderModel, PreTrainedModel, AutoConfig, AutoTokenizer
 from torch import nn
 import gradio as gr
-class CustomBERTModel(PreTrainedModel):
-      def __init__(self, config, transformer_model_name_or_path, num_feats):
-            super(CustomBERTModel, self).__init__(config)
-            self.bert = BertModel.from_pretrained(
-                  transformer_model_name_or_path,
+import torch
+
+class CustomT5Model(PreTrainedModel):
+      def __init__(self, config, base_model):
+            super(CustomT5Model, self).__init__(config)
+            self.t5 = T5EncoderModel.from_pretrained(
+                  base_model,
                   config=config
             )
             ### New layers:
             self.regression_layer = nn.Sequential(
-                  nn.Linear(config.hidden_size, 384),
-                  nn.LeakyReLU(),
-                  nn.Linear(384, 192),
-                  nn.LeakyReLU(),
-                  nn.Linear(192, 96),
-                  nn.LeakyReLU(),
-                  nn.Linear(96, 48),
-                  nn.LeakyReLU(),
-                  nn.Linear(48, 24),
-                  nn.LeakyReLU(),
-                  nn.Linear(24, 12),
-                  nn.LeakyReLU(),
-                  nn.Linear(12, num_feats),
-                  nn.Sigmoid(),
+                  nn.AvgPool2d((1548, 1)),
+                  nn.Flatten(),
+                  nn.Linear(config.hidden_size, 512),
+                  nn.GELU(),
+                  nn.Linear(512, 256),
+                  nn.GELU(),
+                  nn.Linear(256, 128),
+                  nn.GELU(),
+                  nn.Linear(128, 64),
+                  nn.GELU(),
+                  nn.Linear(64, 32),
+                  nn.GELU(),
+                  nn.Linear(32, 16),
+                  nn.GELU(),
+                  nn.Linear(16, 6),
+                  # nn.Sigmoid(),
             )
-
       def forward(self, **inputs):
-            bert_outputs = self.bert(**inputs)
-            logits = self.regression_layer(bert_outputs.pooler_output)
+            t5_outputs = self.t5(
+                  input_ids=inputs['input_ids'],
+                  attention_mask=inputs['attention_mask'])
+            logits = self.regression_layer(t5_outputs.last_hidden_state)
             return logits
 
       def _init_weights(self, module):
-            self.bert._init_weights(module)
+            self.t5._init_weights(module)
 
 
 class Interface:
       def __init__(self) -> None:
-            base_model = 'bert-base-uncased'
-            checkpoint = '/home/yuuhanase/FPTU/EXE101/PaperClipAI_EnglishGrading/EnglishGradingModel'
-            config = AutoConfig.from_pretrained(base_model)
-            self.tokenizer = AutoTokenizer.from_pretrained(base_model)
-            self.model = CustomBERTModel.from_pretrained(
+            base_model = 'google/flan-t5-large'
+            checkpoint = '/home/yuuhanase/FPTU/EXE101/PaperClipAI_EnglishGrading/artifacts/trained_model/EnglishGrading_t5_regression_5e'
+            config = AutoConfig.from_pretrained(checkpoint)
+            self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+            self.model = CustomT5Model.from_pretrained(
                   checkpoint, 
                   config=config, 
-                  transformer_model_name_or_path=base_model,
-                  num_feats=6
+                  base_model=base_model,
             )
       
-      def grading(self, text):
-            tokenized_input = self.tokenizer(text, return_tensors='pt', truncation=True)#.to(torch.device("cuda"))
+      def inference(self, inp_text):
+            tokenized_input = self.tokenizer(
+                  inp_text, 
+                  return_tensors='pt',
+                  max_length=1548,
+                  padding='max_length').to(self.model.device)
             output = self.model(**tokenized_input)[0]
+            output
             feats = ['cohesion', 'syntax', 'vocabulary', 'phraseology', 'grammar', 'conventions']
-            result = ''
+            result = {}
             for i in range(6):
-                  result += f'{feats[i]}: {output[i] * 5.0}\n'
+                  result[feats[i]] = round((output[i].item()*5.0)*2)/2.0
+            tokenized_input = tokenized_input.to('cpu')
+            output = output.to('cpu')
+
+            del tokenized_input, output
+            torch.cuda.empty_cache()
+
             return result
+
+      def grading(self, text):
+            result = self.inference(text)
+            output = ''
+            for criteria in result:
+                  output += f'{criteria}: {result[criteria]}\n'
+            return output
 
       def run(self):
             demo = gr.Interface(fn=self.grading, inputs="textbox", outputs="textbox")
